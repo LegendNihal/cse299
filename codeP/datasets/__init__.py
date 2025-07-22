@@ -9,5 +9,8 @@ def get_dataset(dataset_name, model_name=None):
     elif dataset_name == "mnist":
         from .cgan_dataset import load_data
         return load_data()
+    elif dataset_name == "ESC-50":
+        from .wavegan_dataset import download_dataset
+        return download_dataset()
     else:
         raise ValueError(f"Unknown dataset: {dataset_name}")
