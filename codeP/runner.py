@@ -14,6 +14,13 @@ import os
 from pathlib import Path
 import random
 from tqdm import tqdm
+from transformers import (
+    GPTNeoForCausalLM,
+    GPT2Tokenizer,
+    TrainingArguments,
+    Trainer,
+    DataCollatorForLanguageModeling
+)
 
 def run_pipeline(model_name, dataset_name, options_name=None):
     # This will run in main.py
@@ -233,6 +240,231 @@ def run_pipeline(model_name, dataset_name, options_name=None):
         train_wavegan(generator, discriminator, dataloader,num_epochs=NUM_EPOCHS, lr=LEARNING_RATE)
         print("\nGenerating final samples...")
         generate_samples(generator, num_samples=5)
+    elif model_name == "gptneo":
+        TRAINING_DATA_PATH = "./DATA/gptneo/training"
+        TESTING_DATA_PATH = "./DATA/gptneo/testing"
+        RESULTS_PATH = "./RESULTS/gptneo/"
+        training_texts = get_dataset(TRAINING_DATA_PATH, "training")
+        testing_texts = get_dataset(TESTING_DATA_PATH, "testing")
 
+        MODEL_NAME = "EleutherAI/gpt-neo-1.3B"  # Smaller model for faster testing
+        tokenizer = GPT2Tokenizer.from_pretrained(MODEL_NAME)
+        model = GPTNeoForCausalLM.from_pretrained(MODEL_NAME)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        def split_questions(text):
+            """Split text into individual questions"""
+            # Split by question marks followed by whitespace or newlines
+            import re
+
+            # First, try splitting by question marks
+            potential_questions = re.split(r'\?\s*\n', text)
+
+            # Clean up and filter out empty strings
+            questions = []
+            for q in potential_questions:
+                q = q.strip()
+                if q and len(q) > 5:  # Only keep non-empty questions with reasonable length
+                    # Add question mark back if it was removed
+                    if not q.endswith('?'):
+                        q += '?'
+                    questions.append(q)
+
+            # If no proper split happened, treat the whole text as one prompt
+            if len(questions) <= 1:
+                return [text.strip()]
+
+            return questions
+        def generate_response_debug(model, tokenizer, prompt, max_length=200, temperature=0.8):
+            """Generate response with detailed debugging and better parameters"""
+            print(f"\n--- Generating response for prompt ---")
+            print(f"Prompt: {prompt}")
+
+            try:
+                # Add some context to make it clear we want a complete answer
+                formatted_prompt = f"Question: {prompt}\nAnswer:"
+
+                # Tokenize input
+                inputs = tokenizer.encode(formatted_prompt, return_tensors='pt', truncation=True, max_length=512)
+                print(f"Input tokens shape: {inputs.shape}")
+                print(f"Formatted prompt: {formatted_prompt}")
+
+                # Generate with better parameters
+                with torch.no_grad():
+                    outputs = model.generate(
+                        inputs,
+                        max_length=len(inputs[0]) + max_length,
+                        min_length=len(inputs[0]) + 20,  # Ensure minimum response length
+                        temperature=temperature,
+                        top_p=0.9,
+                        top_k=50,
+                        do_sample=True,
+                        pad_token_id=tokenizer.eos_token_id,
+                        eos_token_id=tokenizer.eos_token_id,
+                        no_repeat_ngram_size=3,
+                        repetition_penalty=1.1,
+                        length_penalty=1.0,
+                        early_stopping=False  # Don't stop early
+                    )
+
+                # Decode response
+                full_response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+                # Extract only the generated part (after "Answer:")
+                if "Answer:" in full_response:
+                    generated_part = full_response.split("Answer:")[-1].strip()
+                else:
+                    generated_part = full_response[len(formatted_prompt):].strip()
+
+                # If response is too short, try alternative approach
+                if len(generated_part) < 10:
+                    print("Response too short, trying alternative approach...")
+                    simple_inputs = tokenizer.encode(prompt, return_tensors='pt', truncation=True, max_length=512)
+
+                    with torch.no_grad():
+                        outputs = model.generate(
+                            simple_inputs,
+                            max_length=len(simple_inputs[0]) + max_length,
+                            min_length=len(simple_inputs[0]) + 30,
+                            temperature=0.9,
+                            top_p=0.95,
+                            do_sample=True,
+                            pad_token_id=tokenizer.eos_token_id,
+                            no_repeat_ngram_size=2,
+                            repetition_penalty=1.2
+                        )
+
+                    full_response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+                    generated_part = full_response[len(prompt):].strip()
+
+                print(f"✓ Generated response ({len(generated_part)} characters)")
+                print(f"Response preview: {generated_part[:100]}...")
+                return generated_part
+
+            except Exception as e:
+                print(f"✗ Generation failed: {e}")
+                return f"Error generating response: {e}"
+        if testing_texts:
+            print(f"Processing {len(testing_texts)} files from testing directory:")
+
+            all_results = []
+            question_counter = 1
+
+            for file_idx, file_content in enumerate(testing_texts):
+                print(f"\n{'='*50}")
+                print(f"PROCESSING FILE {file_idx + 1}")
+                print(f"{'='*50}")
+
+                # Split the file content into individual questions
+                questions = split_questions(file_content)
+                print(f"Found {len(questions)} questions in this file:")
+
+                for q_idx, question in enumerate(questions):
+                    print(f"\n{'='*40}")
+                    print(f"QUESTION {question_counter} (File {file_idx + 1}, Q{q_idx + 1}):")
+                    print(f"{'='*40}")
+                    print(f"Question: {question}")
+
+                    response = generate_response_debug(model, tokenizer, question)
+
+                    print(f"\nGENERATED RESPONSE:")
+                    print(f"{'='*40}")
+                    print(response)
+                    print(f"{'='*40}")
+
+                    # Save individual result
+                    result_filename = f"question_{question_counter}_response.txt"
+                    result_path = os.path.join(RESULTS_PATH, result_filename)
+
+                    try:
+                        with open(result_path, 'w', encoding='utf-8') as f:
+                            f.write(f"QUESTION:\n{question}\n\n")
+                            f.write(f"RESPONSE:\n{response}\n")
+                        print(f"✓ Saved result to: {result_filename}")
+                    except Exception as e:
+                        print(f"✗ Failed to save result: {e}")
+
+                    # Store for consolidated results
+                    all_results.append({
+                        'question_number': question_counter,
+                        'file_index': file_idx + 1,
+                        'question': question,
+                        'response': response
+                    })
+
+                    question_counter += 1
+
+            # Save consolidated results
+            consolidated_filename = "all_questions_and_answers.txt"
+            consolidated_path = os.path.join(RESULTS_PATH, consolidated_filename)
+
+            try:
+                with open(consolidated_path, 'w', encoding='utf-8') as f:
+                    f.write("NORTH SOUTH UNIVERSITY - QUESTIONS AND ANSWERS\n")
+                    f.write("=" * 60 + "\n\n")
+
+                    for result in all_results:
+                        f.write(f"QUESTION {result['question_number']}:\n")
+                        f.write(f"{result['question']}\n\n")
+                        f.write(f"ANSWER:\n")
+                        f.write(f"{result['response']}\n\n")
+                        f.write("-" * 50 + "\n\n")
+
+                print(f"\n✓ Saved consolidated results to: {consolidated_filename}")
+                print(f"✓ Total questions processed: {len(all_results)}")
+
+            except Exception as e:
+                print(f"✗ Failed to save consolidated results: {e}")
+
+        else:
+            print("No testing data available. Creating sample prompts for testing...")
+
+            # Create sample prompts for testing
+            sample_prompts = [
+                "What is artificial intelligence?",
+                "How does machine learning work?",
+                "What are the benefits of deep learning?"
+            ]
+
+            for i, prompt in enumerate(sample_prompts):
+                print(f"\n{'='*40}")
+                print(f"SAMPLE PROMPT {i+1}:")
+                print(f"{'='*40}")
+                print(f"Prompt: {prompt}")
+
+                response = generate_response_debug(model, tokenizer, prompt)
+
+                print(f"\nGENERATED RESPONSE:")
+                print(f"{'='*40}")
+                print(response)
+                print(f"{'='*40}")
+
+                # Save to file
+                result_filename = f"sample_result_{i+1}.txt"
+                result_path = os.path.join(RESULTS_PATH, result_filename)
+
+                try:
+                    with open(result_path, 'w', encoding='utf-8') as f:
+                        f.write(f"PROMPT:\n{prompt}\n\n")
+                        f.write(f"RESPONSE:\n{response}\n")
+                    print(f"✓ Saved result to: {result_filename}")
+                except Exception as e:
+                    print(f"✗ Failed to save result: {e}")
+        if os.path.exists(RESULTS_PATH):
+            result_files = os.listdir(RESULTS_PATH)
+            print(f"Files created in Results folder: {result_files}")
+
+            for file in result_files:
+                if file.endswith('.txt'):
+                    file_path = os.path.join(RESULTS_PATH, file)
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                            print(f"\n--- Content of {file} ---")
+                            print(content[:300] + "..." if len(content) > 300 else content)
+                    except Exception as e:
+                        print(f"Error reading {file}: {e}")
+        else:
+            print("Results folder not found!")
     else:
         return
