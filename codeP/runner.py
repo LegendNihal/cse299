@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import torchaudio
 import numpy as np
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
 import os
 from pathlib import Path
 import random
@@ -466,5 +466,57 @@ def run_pipeline(model_name, dataset_name, options_name=None):
                         print(f"Error reading {file}: {e}")
         else:
             print("Results folder not found!")
+    elif model_name == "gpt2":
+        # Get dataset info
+        
+        dataset_info = get_dataset(dataset_name, model_name)
+        
+        if dataset_info is None:
+            print("Failed to load dataset. Please check your training data.")
+            return
+        
+        # Get model
+        gpt2_model = get_model(model_name)
+        
+        # Train the model
+        print("Starting GPT-2 fine-tuning...")
+        model_path = gpt2_model.train(
+            train_file_path=dataset_info['training_file_path'],
+            block_size=dataset_info['block_size']
+        )
+        
+        # Set up paths
+        results_dir = os.path.join("RESULTS", "gpt2")
+        os.makedirs(results_dir, exist_ok=True)
+        
+        # Process prompts from testing file
+        prompt_file_path = os.path.join("DATA", "testing", "sample_prompt.txt")
+        
+        
+        # Process prompts and generate results
+        print("Processing prompts and generating results...")
+        results = gpt2_model.process_prompts(prompt_file_path, results_dir)
+        
+        # Generate some sample outputs
+        # print("Generating additional samples...")
+        # samples = gpt2_model.generate_samples(num_samples=5)
+        
+        # Save samples
+        samples_path = os.path.join(results_dir, "sample_outputs.txt")
+        with open(samples_path, 'w', encoding='utf-8') as f:
+            f.write("GPT-2 Fine-tuned Model Sample Outputs\n")
+            f.write("="*50 + "\n\n")
+            
+            for i, sample in enumerate(samples, 1):
+                f.write(f"SAMPLE {i}\n")
+                f.write(f"Prompt: {sample['prompt']}\n")
+                f.write(f"Generated on: {sample['timestamp']}\n")
+                f.write("-"*30 + "\n")
+                f.write("Generated Text:\n")
+                f.write(sample['generated_text'])
+                f.write("\n" + "="*50 + "\n\n")
+        
+        print(f"Sample outputs saved to: {samples_path}")
+        print(f"GPT-2 fine-tuning and inference completed!")
     else:
         return
